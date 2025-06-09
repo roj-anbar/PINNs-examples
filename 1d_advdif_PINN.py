@@ -31,15 +31,32 @@ import time
 import math
 
 
-def geo_train(device,x_in,xb,cb,batchsize,learning_rate,epochs,path,Flag_batch,C_analytical,Vel,Diff,Flag_BC_exact ):
+def geo_train(device, x_in, xb, cb, batchsize, learning_rate, epochs, path, Flag_batch, C_analytical, Vel, Diff, Flag_BC_exact):
+	"""
+	INPUTs:
+    device         – torch device (e.g., "cpu" or "cuda")
+    x_in           – numpy array of interior collocation points, shape (N,1)
+    xb             – numpy array of boundary point locations, shape (Nb,1)
+    cb             – numpy array of boundary values, shape (Nb,1)
+    batchsize      – batch size for mini-batch training (if Flag_batch=True)
+    learning_rate  – initial learning rate for Adam optimizer
+    epochs         – total number of training epochs
+    path           – filesystem path prefix for saving model checkpoints
+    Flag_batch     – bool, whether to sample collocation points in batches
+    C_analytical   – numpy array of analytical solution at x_in for plotting
+    Vel            – constant advection velocity v
+    Diff           – constant diffusion coefficient D
+    Flag_BC_exact  – bool, if True embed BCs u(0),u(1) exactly into network
+	"""
 	if (Flag_batch):
 	 dataset = TensorDataset(torch.Tensor(x_in))
 	 dataloader = DataLoader(dataset, batch_size=batchsize,shuffle=True,num_workers = 0,drop_last = True )
 	else:
 	 x = torch.Tensor(x_in)  
-	h_nD = 30
-	h_n = 10 * 4  #20
-	input_n = 1 # this is what our answer is a function of. In the original example 3 : x,y,scale 
+
+	h_nD = 30     # width of Net 1 
+	h_n = 10 * 4  # width of Net 2 #20
+	input_n = 1   # dimension of input vector (scalar position only here) # this is what our answer is a function of. In the original example 3 : x,y,scale 
 
 	class Swish(nn.Module):
 		"""
@@ -78,10 +95,15 @@ def geo_train(device,x_in,xb,cb,batchsize,learning_rate,epochs,path,Flag_batch,C
 		def forward(self,x):
 			output = self.main(x)
 			return  output
+	
 	class Net2(nn.Module):
-
-		#The __init__ function stack the layers of the 
-		#network Sequentially 
+		"""
+		- Net2: PINN architecture for steady 1D advection–diffusion.
+		- Fully‐connected MLP: 1→40→40→1 layers with smooth Swish activations.
+		- Outputs a “correction” term which, if Flag_BC_exact=True, is combined with x*(x-1) and a linear term to satisfy u(0)=1, u(1)=0.1 exactly.
+		- Training minimizes the PDE residual over collocation points.
+		"""
+		#The __init__ function stack the layers of the network sequentially.
 		def __init__(self):
 			super(Net2, self).__init__()
 			self.main = nn.Sequential(
