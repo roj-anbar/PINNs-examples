@@ -30,6 +30,9 @@ from math import exp, sqrt,pi
 import time
 import math
 
+print("cuda available?", torch.cuda.is_available(), 
+      "  device count:", torch.cuda.device_count())
+
 
 def geo_train(device, x_in, xb, cb, batchsize, learning_rate, epochs, path, Flag_batch, C_analytical, Vel, Diff, Flag_BC_exact):
 	"""
@@ -52,7 +55,7 @@ def geo_train(device, x_in, xb, cb, batchsize, learning_rate, epochs, path, Flag
 	 dataset = TensorDataset(torch.Tensor(x_in))
 	 dataloader = DataLoader(dataset, batch_size=batchsize,shuffle=True,num_workers = 0,drop_last = True )
 	else:
-	 x = torch.Tensor(x_in)  
+	 x = torch.Tensor(x_in).to(device)  
 
 	h_nD = 30     # width of Net 1 
 	h_n = 10 * 4  # width of Net 2 #20
@@ -243,23 +246,30 @@ def geo_train(device, x_in, xb, cb, batchsize, learning_rate, epochs, path, Flag
 			#optimizer3.step(closure)
 			#optimizer4.step(closure)
 			optimizer2.step() 
-			if epoch % 5 ==0:
-				print('Train Epoch: {} \tLoss: {:.10f}'.format(
-					epoch, loss.item()))
+			if epoch % 50 ==0:
+				print('Train Epoch: {} \tLoss: {:.10f}'.format(epoch, loss.item()))
 				
 
 	toc = time.time()
 	elapseTime = toc - tic
 	print ("elapse time = ", elapseTime)
+
 	###################
 	#plot
 	output = net2(x)  #evaluate model
-	C_Result = output.data.numpy()
+	if device == "cpu":
+		C_Result = output.data.numpy()
+		x_plot = x.detach().numpy()
+	else:
+		C_Result = output.detach().cpu().numpy()
+		x_plot = x.detach().cpu().numpy()
+
 	plt.figure()
-	plt.plot(x.detach().numpy(), C_analytical[:], '--', label='True data', alpha=0.5) #analytical
-	plt.plot(x.detach().numpy() , C_Result, 'go', label='Predicted', alpha=0.5) #PINN
+	plt.plot(x_plot, C_analytical[:], '--', label='True data', alpha=0.5) #analytical
+	plt.plot(x_plot, C_Result, 'go', label='Predicted', alpha=0.5) #PINN
 	plt.legend(loc='best')
-	plt.show()
+	plt.title(f"1d_advdiff: Epoch = {epochs}, Loss = {loss:.5f}")
+	plt.savefig('1d_advdiff.png')
 
 	return net2
 
@@ -284,8 +294,8 @@ def geo_train(device, x_in, xb, cb, batchsize, learning_rate, epochs, path, Flag
 
 #######################################################
 #Main code:
-device = torch.device("cpu")
-epochs  = 6000 
+device = torch.device("cuda") #("cuda")
+epochs  = 10000 
 
 Flag_batch = False #Use batch or not 
 Flag_Chebyshev = False #Use Chebyshev pts for more accurcy in BL region
