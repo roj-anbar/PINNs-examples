@@ -2,7 +2,11 @@
 To solve 2D steady diffusion equation with a source term.
 Domain: x = [0, 1]
 PDE: Diff * Laplacian(u) = f_source -> Laplacian(u) = d2u/dx2 + d2u/dy2
-BCs: 
+BCs: Dirichlet on left and right / Homogeneous Neumann on top and bottom
+- left:   u(x=0) = C_BC1 = 0.2
+- right:  u(x=1) = C_BC2 = 1
+- bottom: du/dy(y=0) = 0
+- top:	  du/dy(y=0.5) = 0
 Params: D=0.1 / f=-1
 
 Original author: Amirhossein Arzani (https://github.com/amir-cardiolab/PINN-examples.git)
@@ -33,9 +37,9 @@ def geo_train(device, x_in, y_in, xb, yb, cb, xb_Neumann, yb_Neumann, batchsize,
 	INPUTs:
     device         			– torch device (e.g., "cpu" or "cuda")
     x_in, y_in     			– numpy array of interior collocation points, shape (N,1)
-    xb, yb         			– numpy array of boundary point locations, shape (Nb,1)
-	xb_Neumann, yb_Neumann 	– 
-    cb             			– numpy array of boundary values, shape (Nb,1)
+    xb, yb         			– numpy array of Dirichlet boundary point locations, shape (Nb,1)
+    cb             			– numpy array of Dirichlet boundary values, shape (Nb,1)
+	xb_Neumann, yb_Neumann 	– numpy array of Neumann boundary point locations,
     batchsize      			– batch size for mini-batch training (if Flag_batch=True)
     learning_rate  			– initial learning rate for Adam optimizer
     epochs         			– total number of training epochs
@@ -60,7 +64,7 @@ def geo_train(device, x_in, y_in, xb, yb, cb, xb_Neumann, yb_Neumann, batchsize,
 	 y = torch.Tensor(y_in).to(device)    
 	h_nD = 30   # width of Net 1 
 	h_n = 10    # width of Net 2 #20
-	input_n = 2 # dimension of input vector (scalar position only here) # this is what our answer is a function of. In the original example 3 : x,y,scale 
+	input_n = 2 # dimension of input vector (2D problem: x, y) # this is what our answer is a function of. In the original example 3 : x,y,scale 
 
 
 	class Swish(nn.Module):
@@ -178,9 +182,9 @@ def geo_train(device, x_in, y_in, xb, yb, cb, xb_Neumann, yb_Neumann, batchsize,
 		C = C.view(len(C),-1)
 
 		
-		c_x = torch.autograd.grad(C,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
+		c_x  = torch.autograd.grad(C,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
 		c_xx = torch.autograd.grad(c_x,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
-		c_y = torch.autograd.grad(C,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
+		c_y  = torch.autograd.grad(C,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
 		c_yy = torch.autograd.grad(c_y,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
 		
 		loss_1 = f_source - Diff * (c_xx + c_yy)
@@ -197,7 +201,6 @@ def geo_train(device, x_in, y_in, xb, yb, cb, xb_Neumann, yb_Neumann, batchsize,
 		return loss
 
 	###################################################################
-	############################################################################
 	#### Define the boundary conditions ##############
 	def Loss_BC(xb,yb,xb_Neumann,yb_Neumann ,cb):
 		xb = torch.FloatTensor(xb).to(device)
@@ -224,14 +227,15 @@ def geo_train(device, x_in, y_in, xb, yb, cb, xb_Neumann, yb_Neumann, batchsize,
 		out_n = net2(net_in2 )
 		c_n = out_n.view(len(out_n), -1)
 
-		c_y = torch.autograd.grad(c_n,yb_Neumann,grad_outputs=torch.ones_like(yb_Neumann),create_graph = True,only_inputs=True)[0]
+		# Compute du/dy
+		c_y = torch.autograd.grad(c_n, yb_Neumann, grad_outputs=torch.ones_like(yb_Neumann), create_graph = True, only_inputs=True)[0]
 
+		# Enforce du/dy=0
 		loss_bc_Neumann = loss_f(c_y, torch.zeros_like(c_y))  #The zeron Neumann BC (top and bottom)
 
 		loss_bc = loss_bc_Dirichlet + loss_bc_Neumann
 
 		return loss_bc
-
 
 	
 	LOSS = []
@@ -249,7 +253,7 @@ def geo_train(device, x_in, y_in, xb, yb, cb, xb_Neumann, yb_Neumann, batchsize,
 				#def closure():
 				net2.zero_grad()
 				loss_eqn = criterion(x_in,y_in)
-				loss_bc = Loss_BC(xb,yb,xb_Neumann,yb_Neumann ,cb)
+				loss_bc = Loss_BC(xb, yb, xb_Neumann, yb_Neumann, cb)
 				loss = loss_eqn + Lambda_BC* loss_bc
 				loss.backward()
 				#return loss
@@ -267,7 +271,7 @@ def geo_train(device, x_in, y_in, xb, yb, cb, xb_Neumann, yb_Neumann, batchsize,
 				#	torch.save(net2.state_dict(),path+"geo_para_axisy_sigma"+str(sigma)+"_epoch"+str(epoch)+"hard_u.pt")
 		#Test with all data
 		loss_eqn = criterion(x,y)	
-		loss_bc = Loss_BC(xb,yb,xb_Neumann,yb_Neumann,cb)
+		loss_bc = Loss_BC(xb, yb, xb_Neumann, yb_Neumann, cb)
 		loss = loss_eqn + Lambda_BC* loss_bc
 		print('**** Final (all batches) \tLoss: {:.10f} \t Loss BC {:.6f}'.format(
 					loss.item(),loss_bc.item()))
@@ -280,7 +284,7 @@ def geo_train(device, x_in, y_in, xb, yb, cb, xb_Neumann, yb_Neumann, batchsize,
 			#def closure():
 			net2.zero_grad()
 			loss_eqn = criterion(x,y)
-			loss_bc = Loss_BC(xb,yb,xb_Neumann,yb_Neumann ,cb)
+			loss_bc = Loss_BC(xb, yb, xb_Neumann, yb_Neumann, cb)
 			if (Flag_BC_exact):
 				loss = loss_eqn #+ loss_bc
 			else:
@@ -344,7 +348,7 @@ def geo_train(device, x_in, y_in, xb, yb, cb, xb_Neumann, yb_Neumann, batchsize,
 device = torch.device("cpu")
 
 
-Flag_batch = True #Use batch
+Flag_batch = False #Use batch
 Flag_Chebyshev = False #Use Chebyshev pts for more accurcy in BL region; Not implemented in 2D
 Flag_BC_exact = False #Not implemented yet in 2D
 Lambda_BC  = 10. # the weight used in enforcing the BC
@@ -354,7 +358,7 @@ batchsize = 128  #Total number of batches
 learning_rate = 1e-2 
 
 if (not Flag_batch):
-	epochs  = 2000
+	epochs  = 6000
 else:
 	epochs = 25
 
@@ -368,21 +372,21 @@ yStart = 0.
 yEnd = 0.5
 
 if(Flag_Chebyshev): #!!!Not a very good idea (makes even the simpler case worse)
- x = np.polynomial.chebyshev.chebpts1(2*nPt)
- x = x[nPt:]
- if(0):#Mannually place more pts at the BL 
-    x = np.linspace(0.95, xEnd, nPt)
-    x[1] = 0.2
-    x[2] = 0.5
- x[0] = 0.
- x[-1] = xEnd
- x = np.reshape(x, (nPt,1))
+	x = np.polynomial.chebyshev.chebpts1(2*nPt)
+	x = x[nPt:]
+	if(0):#Mannually place more pts at the BL
+		x = np.linspace(0.95, xEnd, nPt)
+		x[1] = 0.2
+		x[2] = 0.5
+	x[0] = 0.
+	x[-1] = xEnd
+	x = np.reshape(x, (nPt,1))
 else:
- x = np.linspace(xStart, xEnd, nPt)
- y = np.linspace(yStart, yEnd, nPt)
- x, y = np.meshgrid(x, y)
- x = np.reshape(x, (np.size(x[:]),1))
- y = np.reshape(y, (np.size(y[:]),1))
+	x = np.linspace(xStart, xEnd, nPt)
+	y = np.linspace(yStart, yEnd, nPt)
+	x, y = np.meshgrid(x, y)
+	x = np.reshape(x, (np.size(x[:]),1))
+	y = np.reshape(y, (np.size(y[:]),1))
 
 print('shape of x',x.shape)
 print('shape of y',y.shape)
@@ -406,14 +410,15 @@ cright = np.linspace(C_BC2, C_BC2, nPt)
 cup = np.linspace(C_BC2, C_BC2, nPt)
 cdown = np.linspace(C_BC1, C_BC1, nPt)
 
-if(0): #Dirichlet BC everywhere
- xb = np.concatenate((xleft, xright, xup, xdown), 0)
- yb = np.concatenate((yleft, yright, yup, ydown), 0)
- cb = np.concatenate((cleft, cright, cup, cdown), 0)
-else: #Only Dirichlet BC left and right 
- xb = np.concatenate((xleft, xright), 0)
- yb = np.concatenate((yleft, yright), 0)
- cb = np.concatenate((cleft, cright), 0)
+# Define the boundary conditions
+if(0): #same as if false! #Dirichlet BC everywhere
+	xb = np.concatenate((xleft, xright, xup, xdown), 0)
+	yb = np.concatenate((yleft, yright, yup, ydown), 0)
+	cb = np.concatenate((cleft, cright, cup, cdown), 0)
+else: #Dirichlet BC left and right / Neumann BC up and down
+	xb = np.concatenate((xleft, xright), 0)
+	yb = np.concatenate((yleft, yright), 0)
+	cb = np.concatenate((cleft, cright), 0)
 
 ##Define zero Neumann BC location
 xb_Neumann = np.concatenate((xup, xdown), 0) 	
@@ -428,18 +433,9 @@ yb_Neumann = yb_Neumann.reshape(-1, 1) #need to reshape to get 2D array
 
 
 path = "Results/"
-
-#Analytical soln
-#A = (C_BC2 - C_BC1) / (exp(Vel/Diff) - 1)
-#B = C_BC1 - A
-#C_analytical = A*np.exp(Vel/Diff*x[:] ) + B
-
-
-
-#path = pre+"aneurysmsigma01scalepara_100pt-tmp_"+str(ii)
 geo_train(device,x,y,xb,yb,cb,xb_Neumann,yb_Neumann, batchsize,learning_rate,epochs,path,Flag_batch,f_source,Diff,Flag_BC_exact,Lambda_BC  )
-#tic = time.time()
 
+#tic = time.time()
 #elapseTime = toc - tic
 #print ("elapse time in serial = ", elapseTime)
 
