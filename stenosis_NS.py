@@ -1,7 +1,9 @@
 """
 To solve 2D steady Navier-Stokes equation in an idealized 2D stenosis.
-Domain: 
-PDE: 
+Domain: x = [0, X_scale] / y = [0, Y_scale]
+PDEs:
+- Navier-Stokes: u.grad(u) + grad(P)/rho - nu * Laplacian(u) = 0
+- continuty:     div(u) = 0
 BCs: 
 Params: 
 
@@ -27,15 +29,17 @@ from torch.utils.data import DataLoader, TensorDataset,RandomSampler
 from math import exp, sqrt,pi
 import time
 import vtk
+from vtk.util import numpy_support # to save data
 #import torch.optim.lr_scheduler.StepLR
 
 
 
 
-def geo_train(device, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epochs, path, Flag_batch, Diff, rho, Flag_BC_exact, Lambda_BC, nPt, T, xb_inlet, yb_inlet, ub_inlet, vb_inlet):
+def geo_train(device, data_vtk, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epochs, path, Flag_batch, nu, rho, Flag_BC_exact, Lambda_BC, nPt, T, xb_inlet, yb_inlet, ub_inlet, vb_inlet):
 	"""
 	INPUTs:
     device         			– torch device (e.g., "cpu" or "cuda")
+	data_vtk				– volumetric mesh file
     x_in, y_in     			– numpy array of interior collocation points, shape (N,1)
     xb, yb         			– numpy array of boundary point locations, shape (Nb,1)
     ub, vb             		– numpy array of boundary velocities in x and y direction, shape (Nb,1)
@@ -46,7 +50,7 @@ def geo_train(device, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epoc
     epochs         			– total number of training epochs
     path           			– filesystem path prefix for saving model checkpoints
     Flag_batch     			– bool, whether to sample collocation points in batches
-    Diff           			– constant diffusion coefficient D
+    nu           			– constant kinematic viscosity (mu/rho)
 	rho           			– constant density coefficient 
     Flag_BC_exact  			– bool, if True embed BCs u(0),u(1) exactly into network
 	Lambda_BC				– weight of BC loss function
@@ -66,38 +70,39 @@ def geo_train(device, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epoc
 		ub_inlet = torch.Tensor(ub_inlet).to(device)
 		vb_inlet = torch.Tensor(vb_inlet).to(device)
 
-	if(device == "cuda"): #Cuda slower in double? 
-		x = x.type(torch.cuda.FloatTensor)
-		y = y.type(torch.cuda.FloatTensor)
-		xb = xb.type(torch.cuda.FloatTensor)
-		yb = yb.type(torch.cuda.FloatTensor)
-		ub = ub.type(torch.cuda.FloatTensor)
-		vb = vb.type(torch.cuda.FloatTensor)
-		#dist = dist.type(torch.cuda.FloatTensor)
-		xb_inlet = xb_inlet.type(torch.cuda.FloatTensor)
-		yb_inlet = yb_inlet.type(torch.cuda.FloatTensor)
-		ub_inlet = ub_inlet.type(torch.cuda.FloatTensor)
-		vb_inlet = vb_inlet.type(torch.cuda.FloatTensor)
+		if(device == "cuda"): #Cuda slower in double? 
+			x = x.type(torch.cuda.FloatTensor)
+			y = y.type(torch.cuda.FloatTensor)
+			xb = xb.type(torch.cuda.FloatTensor)
+			yb = yb.type(torch.cuda.FloatTensor)
+			ub = ub.type(torch.cuda.FloatTensor)
+			vb = vb.type(torch.cuda.FloatTensor)
+			#dist = dist.type(torch.cuda.FloatTensor)
+			xb_inlet = xb_inlet.type(torch.cuda.FloatTensor)
+			yb_inlet = yb_inlet.type(torch.cuda.FloatTensor)
+			ub_inlet = ub_inlet.type(torch.cuda.FloatTensor)
+			vb_inlet = vb_inlet.type(torch.cuda.FloatTensor)
 
 
-	dataset = TensorDataset(x,y)
-	#dataset_bc = TensorDataset(x,y,xb,yb,ub,vb,dist)
+		dataset = TensorDataset(x,y)
+		#dataset_bc = TensorDataset(x,y,xb,yb,ub,vb,dist)
 
-	#dataloader = DataLoader(dataset, batch_size=batchsize,shuffle=True,num_workers = 0,drop_last = False )
-	dataloader = DataLoader(dataset, batch_size=batchsize,shuffle=True,num_workers = 0, drop_last = True )
-	#dataloader_bc = DataLoader(dataset_bc, batch_size=batchsize,shuffle=True,num_workers = 0, drop_last = False )
+		#dataloader = DataLoader(dataset, batch_size=batchsize,shuffle=True,num_workers = 0,drop_last = False )
+		dataloader = DataLoader(dataset, batch_size=batchsize,shuffle=True,num_workers = 0, drop_last = True )
+		#dataloader_bc = DataLoader(dataset_bc, batch_size=batchsize,shuffle=True,num_workers = 0, drop_last = False )
 	
 	else:
 		x = torch.Tensor(x_in).to(device)
 		y = torch.Tensor(y_in).to(device) 
 		#t = torch.Tensor(t_in).to(device) 
-		
+
 	#x_test =  torch.Tensor(x_test).to(device)
 	#y_test  = torch.Tensor(y_test).to(device)  
-	h_nD = 64  #for BC net
-	h_D = 128 # for distance net
-	h_n = 128 #for u,v,p
-	input_n = 2 # this is what our answer is a function of. In the original example 3 : x,y,scale 
+
+	h_nD = 64   # for BC net
+	h_D = 128   # for distance net
+	h_n = 128   # for u,v,p
+	input_n = 2 # dimension of input vector (2D problem: x, y) # this is what our answer is a function of
 	
 
 	class Swish(nn.Module):
@@ -643,8 +648,8 @@ def geo_train(device, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epoc
 		X_scale2 = X_scale**2
 		X_scale3 = X_scale**3
 
-		loss_x =    psi_y * psi_xy / X_scale -  psi_x * psi_yy - Diff* (  psi_yxx/ X_scale2 + psi_yyy)           + 1/rho * (P_x / X_scale )  #X-dir
-		loss_y =  - psi_y * psi_xx / X_scale2 + psi_x * psi_xy - Diff* ( -psi_xxx/ X_scale3 - psi_xyy /X_scale ) + 1/rho * P_y     #Y-dir
+		loss_x =    psi_y * psi_xy / X_scale -  psi_x * psi_yy - nu * (  psi_yxx/ X_scale2 + psi_yyy)           + 1/rho * (P_x / X_scale )  #X-dir
+		loss_y =  - psi_y * psi_xx / X_scale2 + psi_x * psi_xy - nu * ( -psi_xxx/ X_scale3 - psi_xyy /X_scale ) + 1/rho * P_y     #Y-dir
 
 
 
@@ -707,8 +712,8 @@ def geo_train(device, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epoc
 		#u_t = torch.autograd.grad(u,t,grad_outputs=torch.ones_like(t),create_graph = True,only_inputs=True)[0]
 		#v_t = torch.autograd.grad(v,t,grad_outputs=torch.ones_like(t),create_graph = True,only_inputs=True)[0]
 		
-		loss_1 = u*v_x+v*v_y - Diff*(v_xx+v_yy)+1/rho*P_y #Y-dir
-		loss_2 = u*u_x+v*u_y - Diff*(u_xx+u_yy)+1/rho*P_x #X-dir
+		loss_1 = u*v_x+v*v_y - nu * (v_xx+v_yy) + 1/rho*P_y #Y-dir
+		loss_2 = u*u_x+v*u_y - nu * (u_xx+u_yy) + 1/rho*P_x #X-dir
 		loss_3 = (u_x + v_y) #continuity
 
 
@@ -760,37 +765,41 @@ def geo_train(device, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epoc
 		#u = u * t + V_IC #Enforce I.C???
 		#v = v * t + V_IC #Enforce I.C???
 
-		
-		u_x = torch.autograd.grad(u,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
-		u_xx = torch.autograd.grad(u_x,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
-		u_y = torch.autograd.grad(u,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
-		u_yy = torch.autograd.grad(u_y,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
-		v_x = torch.autograd.grad(v,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
-		v_xx = torch.autograd.grad(v_x,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
-		v_y = torch.autograd.grad(v,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
-		v_yy = torch.autograd.grad(v_y,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
+		### Compute Gradients
 
-		P_x = torch.autograd.grad(P,x,grad_outputs=torch.ones_like(x),create_graph = True,only_inputs=True)[0]
-		P_y = torch.autograd.grad(P,y,grad_outputs=torch.ones_like(y),create_graph = True,only_inputs=True)[0]
+		# Velocity gradients
+		u_x  = torch.autograd.grad(u  , x, grad_outputs=torch.ones_like(x), create_graph = True, only_inputs=True)[0]
+		u_y  = torch.autograd.grad(u  , y, grad_outputs=torch.ones_like(y), create_graph = True, only_inputs=True)[0]
+		v_x  = torch.autograd.grad(v  , x, grad_outputs=torch.ones_like(x), create_graph = True, only_inputs=True)[0]
+		v_y  = torch.autograd.grad(v  , y, grad_outputs=torch.ones_like(y), create_graph = True, only_inputs=True)[0]
+		u_xx = torch.autograd.grad(u_x, x, grad_outputs=torch.ones_like(x), create_graph = True, only_inputs=True)[0]
+		u_yy = torch.autograd.grad(u_y, y, grad_outputs=torch.ones_like(y), create_graph = True, only_inputs=True)[0]
+		v_xx = torch.autograd.grad(v_x, x, grad_outputs=torch.ones_like(x), create_graph = True, only_inputs=True)[0]
+		v_yy = torch.autograd.grad(v_y, y, grad_outputs=torch.ones_like(y), create_graph = True, only_inputs=True)[0]
 
+		# Pressure gradients
+		P_x = torch.autograd.grad(P, x, grad_outputs=torch.ones_like(x), create_graph = True, only_inputs=True)[0]
+		P_y = torch.autograd.grad(P, y, grad_outputs=torch.ones_like(y), create_graph = True, only_inputs=True)[0]
+
+		# Velocity time derivatives
 		#u_t = torch.autograd.grad(u,t,grad_outputs=torch.ones_like(t),create_graph = True,only_inputs=True)[0]
 		#v_t = torch.autograd.grad(v,t,grad_outputs=torch.ones_like(t),create_graph = True,only_inputs=True)[0]
 		
-		XX_scale = U_scale * (X_scale**2)
-		YY_scale = U_scale * (Y_scale**2)
-		UU_scale  = U_scale **2
+		XX_scale  = U_scale * (X_scale**2)
+		YY_scale  = U_scale * (Y_scale**2)
+		UU_scale  = U_scale**2
 	
-		loss_2 = u*u_x / X_scale + v*u_y / Y_scale - Diff*( u_xx/XX_scale  + u_yy /YY_scale  )+ 1/rho* (P_x / (X_scale*UU_scale)   )  #X-dir
-		loss_1 = u*v_x / X_scale + v*v_y / Y_scale - Diff*( v_xx/ XX_scale + v_yy / YY_scale )+ 1/rho*(P_y / (Y_scale*UU_scale)   ) #Y-dir
-		loss_3 = (u_x / X_scale + v_y / Y_scale) #continuity
+		loss_NS_x    	= u*u_x / X_scale + v*u_y / Y_scale - nu * ( u_xx/XX_scale + u_yy/YY_scale ) + 1/rho* ( P_x / (X_scale*UU_scale) )  
+		loss_NS_y 	 	= u*v_x / X_scale + v*v_y / Y_scale - nu * ( v_xx/XX_scale + v_yy/YY_scale ) + 1/rho* ( P_y / (Y_scale*UU_scale) ) 
+		loss_continuity = (u_x / X_scale + v_y / Y_scale) 
 
 
 
 		# MSE LOSS
 		loss_f = nn.MSELoss()
 
-		#Note our target is zero. It is residual so we use zeros_like
-		loss = loss_f(loss_1,torch.zeros_like(loss_1))+  loss_f(loss_2,torch.zeros_like(loss_2))+  loss_f(loss_3,torch.zeros_like(loss_3))
+		# Note: our target is zero -> It is residual so we use zeros_like
+		loss = loss_f(loss_NS_y,torch.zeros_like(loss_NS_y))+  loss_f(loss_NS_x,torch.zeros_like(loss_NS_x))+  loss_f(loss_continuity,torch.zeros_like(loss_continuity))
 
 		return loss
 
@@ -938,7 +947,7 @@ def geo_train(device, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epoc
 
 	toc = time.time()
 	elapseTime = toc - tic
-	print ("elapse time in parallel = ", elapseTime)
+	print ("elapse time = ", elapseTime)
 	###################
 	net2_u.eval()
 	net2_v.eval()
@@ -946,13 +955,13 @@ def geo_train(device, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epoc
 	#plot
 	if(1):#save network
 		#torch.save(net2_psi.state_dict(),path+"bwd2len2streamf_step_psi_"+str(epochs)+".pt")
-		torch.save(net2_p.state_dict(),path+"sten_p" + ".pt")
-		torch.save(net2_u.state_dict(),path+"sten_u" + ".pt")
-		torch.save(net2_v.state_dict(),path+"sten_v" + ".pt")
+		torch.save(net2_p.state_dict(), path+"sten_p" + ".pt")
+		torch.save(net2_u.state_dict(), path+"sten_u" + ".pt")
+		torch.save(net2_v.state_dict(), path+"sten_v" + ".pt")
 		#torch.save(net1_bc_u.state_dict(),path+"bwd2len2_step_bcu_"+str(epochs)+".pt")
 		#torch.save(net1_bc_v.state_dict(),path+"bwd2len2_step_bcv_"+str(epochs)+".pt")
 		#torch.save(net1_dist.state_dict(),path+"bwd2len2_step_dist_"+str(epochs)+".pt")
-		print ("Data saved!")
+		
 
 
 	
@@ -967,22 +976,39 @@ def geo_train(device, x_in, y_in, xb, yb, ub, vb, batchsize, learning_rate, epoc
 	y = y.cpu()
 
 
+	#------------------------------------ SAVE DATA ---------------------------------#
+	# Convert numpy arrays to VTK arrays
+	vtk_u = numpy_support.numpy_to_vtk(num_array=output_u.ravel(), deep=True, array_type=vtk.VTK_DOUBLE)
+	vtk_v = numpy_support.numpy_to_vtk(num_array=output_v.ravel(), deep=True, array_type=vtk.VTK_DOUBLE)
 
+	# Give them names
+	vtk_u.SetName("u_PINN")
+	vtk_v.SetName("v_PINN")
 
-	plt.figure()
+	# Attach the velocity data to the mesh’s point data
+	pd = data_vtk.GetPointData()
+	pd.AddArray(vtk_u)
+	pd.AddArray(vtk_v)
+
+	# Write out a new VTU with these arrays embedded
+	writer = vtk.vtkXMLUnstructuredGridWriter()
+	writer.SetFileName(path + "stenosis_velocity_PINNs.vtu")
+	writer.SetInputData(data_vtk)
+	writer.Write()
+
+	print ("Data saved!")
+
+	#------------------------------------ PLOTTING ----------------------------------#
+	plt.figure(figsize=(12, 7))
 	plt.subplot(2, 1, 1)
 	plt.scatter(x.detach().numpy(), y.detach().numpy(), c = output_u , cmap = 'rainbow')
-	plt.title('NN results, u')
+	plt.title('2D Stenosis PINNs: Velocity-X')
 	plt.colorbar()
-	plt.show()
-	plt.figure()
-	plt.subplot(2, 1, 1)
+	plt.subplot(2, 1, 2)
 	plt.scatter(x.detach().numpy(), y.detach().numpy(), c = output_v , cmap = 'rainbow')
-	plt.title('NN results, v')
+	plt.title('2D Stenosis PINNs: Velocity-Y')
 	plt.colorbar()
 	plt.show()
-
-
 
 	
 
@@ -1024,14 +1050,14 @@ batchsize = 256  #256 seems faster on gpu
 learning_rate = 1e-5 #1e-4 / 5.  / 2. 
 
 
-epochs  =  5500
+epochs  =  1 #500
 
 Flag_pretrain = False # True #If true reads the nets from last run
 
 
-Diff = 0.001
+nu = 0.001
 rho = 1.
-T = 0.5 #total duraction
+T = 0.5 #total duration
 #nPt_time = 50 #number of time-steps
 
 Flag_x_length = True #if True scales the eqn such that the length of the domain is = X_scale
@@ -1081,7 +1107,7 @@ y  = np.reshape(y_vtk_mesh , (np.size(y_vtk_mesh [:]),1))
 
 
 
-nPt = 130  #400 #130
+nPt = 130   # Number of timepoints #400 #130
 xStart = 0.
 xEnd = 1.
 yStart = 0.
@@ -1099,20 +1125,21 @@ print('shape of y',y.shape)
 
 
 
-## Define boundary points
+#--------------------------- Define boundary points ------------------------------#
 
+# Load inlet boundary
 print ('Loading', bc_file_in)
 reader = vtk.vtkUnstructuredGridReader()
 reader.SetFileName(bc_file_in)
 reader.Update()
-data_vtk = reader.GetOutput()
-n_points = data_vtk.GetNumberOfPoints()
+data_vtk_in = reader.GetOutput()
+n_points = data_vtk_in.GetNumberOfPoints()
 print ('n_points of at inlet' ,n_points)
 x_vtk_mesh = np.zeros((n_points,1))
 y_vtk_mesh = np.zeros((n_points,1))
 VTKpoints = vtk.vtkPoints()
 for i in range(n_points):
-	pt_iso  =  data_vtk.GetPoint(i)
+	pt_iso  =  data_vtk_in.GetPoint(i)
 	x_vtk_mesh[i] = pt_iso[0]	
 	y_vtk_mesh[i] = pt_iso[1]
 	VTKpoints.InsertPoint(i, pt_iso[0], pt_iso[1], pt_iso[2])
@@ -1121,18 +1148,19 @@ point_data.SetPoints(VTKpoints)
 xb_in  = np.reshape(x_vtk_mesh , (np.size(x_vtk_mesh[:]),1)) 
 yb_in  = np.reshape(y_vtk_mesh , (np.size(y_vtk_mesh[:]),1))
 
+# Load wall boundary
 print ('Loading', bc_file_wall)
 reader = vtk.vtkUnstructuredGridReader()
 reader.SetFileName(bc_file_wall)
 reader.Update()
-data_vtk = reader.GetOutput()
-n_pointsw = data_vtk.GetNumberOfPoints()
+data_vtk_wall = reader.GetOutput()
+n_pointsw = data_vtk_wall.GetNumberOfPoints()
 print ('n_points of at wall' ,n_pointsw)
 x_vtk_mesh = np.zeros((n_pointsw,1))
 y_vtk_mesh = np.zeros((n_pointsw,1))
 VTKpoints = vtk.vtkPoints()
 for i in range(n_pointsw):
-	pt_iso  =  data_vtk.GetPoint(i)
+	pt_iso  =  data_vtk_wall.GetPoint(i)
 	x_vtk_mesh[i] = pt_iso[0]	
 	y_vtk_mesh[i] = pt_iso[1]
 	VTKpoints.InsertPoint(i, pt_iso[0], pt_iso[1], pt_iso[2])
@@ -1142,12 +1170,12 @@ xb_wall  = np.reshape(x_vtk_mesh , (np.size(x_vtk_mesh [:]),1))
 yb_wall  = np.reshape(y_vtk_mesh , (np.size(y_vtk_mesh [:]),1))
 
 
-
+# Prescribe inlet velocity
 #u_in_BC = np.linspace(U_BC_in, U_BC_in, n_points) #constant uniform BC
 u_in_BC = (yb_in[:]) * ( 0.3 - yb_in[:] )  / 0.0225 * U_BC_in #parabolic
 
 
-v_in_BC = np.linspace(0., 0., n_points)
+v_in_BC   = np.linspace(0., 0., n_points)
 u_wall_BC = np.linspace(0., 0., n_pointsw)
 v_wall_BC = np.linspace(0., 0., n_pointsw)
 
@@ -1189,10 +1217,10 @@ xb= xb.reshape(-1, 1) #need to reshape to get 2D array
 yb= yb.reshape(-1, 1) #need to reshape to get 2D array
 ub= ub.reshape(-1, 1) #need to reshape to get 2D array
 vb= vb.reshape(-1, 1) #need to reshape to get 2D array
-xb_inlet= xb_inlet.reshape(-1, 1) #need to reshape to get 2D array
-yb_inlet= yb_inlet.reshape(-1, 1) #need to reshape to get 2D array
-ub_inlet= ub_inlet.reshape(-1, 1) #need to reshape to get 2D array
-vb_inlet= vb_inlet.reshape(-1, 1) #need to reshape to get 2D array
+xb_inlet = xb_inlet.reshape(-1, 1) #need to reshape to get 2D array
+yb_inlet = yb_inlet.reshape(-1, 1) #need to reshape to get 2D array
+ub_inlet = ub_inlet.reshape(-1, 1) #need to reshape to get 2D array
+vb_inlet = vb_inlet.reshape(-1, 1) #need to reshape to get 2D array
 
 print('shape of xb',xb.shape)
 print('shape of yb',yb.shape)
@@ -1215,11 +1243,11 @@ print('shape of ub',ub.shape)
 #v_IC= v_IC.reshape(-1, 1)
 
 
-path = "Results/"
+path = Directory + "/results/"
 
 
 #path = pre+"aneurysmsigma01scalepara_100pt-tmp_"+str(ii)
-geo_train(device,x,y,xb,yb,ub,vb,batchsize,learning_rate,epochs,path,Flag_batch,Diff,rho,Flag_BC_exact,Lambda_BC,nPt,T,xb_inlet,yb_inlet,ub_inlet,vb_inlet )
+geo_train(device, data_vtk, x, y, xb, yb, ub, vb, batchsize, learning_rate, epochs, path, Flag_batch, nu, rho, Flag_BC_exact, Lambda_BC, nPt, T, xb_inlet, yb_inlet, ub_inlet, vb_inlet)
 #tic = time.time()
 
 #elapseTime = toc - tic
