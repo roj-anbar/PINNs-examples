@@ -33,6 +33,9 @@ import math
 print("cuda available?", torch.cuda.is_available(), 
       "  device count:", torch.cuda.device_count())
 
+print("cuda available?", torch.cuda.is_available(), 
+      "  device count:", torch.cuda.device_count())
+
 
 def geo_train(device, x_in, xb, cb, batchsize, learning_rate, epochs, path, Flag_batch, C_analytical, Vel, Diff, Flag_BC_exact):
 	"""
@@ -248,11 +251,14 @@ def geo_train(device, x_in, xb, cb, batchsize, learning_rate, epochs, path, Flag
 			optimizer2.step() 
 			if epoch % 50 ==0:
 				print('Train Epoch: {} \tLoss: {:.10f}'.format(epoch, loss.item()))
+			if epoch % 50 ==0:
+				print('Train Epoch: {} \tLoss: {:.10f}'.format(epoch, loss.item()))
 				
 
 	toc = time.time()
 	elapseTime = toc - tic
 	print ("elapse time = ", elapseTime)
+
 
 	###################
 	"""
@@ -269,7 +275,11 @@ def geo_train(device, x_in, xb, cb, batchsize, learning_rate, epochs, path, Flag
 	plt.figure()
 	plt.plot(x_plot, C_analytical[:], '--', label='True data', alpha=0.5) #analytical
 	plt.plot(x_plot, C_Result, 'go', label='Predicted', alpha=0.5) #PINN
+	plt.plot(x_plot, C_analytical[:], '--', label='True data', alpha=0.5) #analytical
+	plt.plot(x_plot, C_Result, 'go', label='Predicted', alpha=0.5) #PINN
 	plt.legend(loc='best')
+	plt.title(f"1d_advdiff: Epoch = {epochs}, Loss = {loss:.5f}")
+	plt.savefig('1d_advdiff.png')
 	plt.title(f"1d_advdiff: Epoch = {epochs}, Loss = {loss:.5f}")
 	plt.savefig('1d_advdiff.png')
 
@@ -297,8 +307,8 @@ def geo_train(device, x_in, xb, cb, batchsize, learning_rate, epochs, path, Flag
 
 #######################################################
 #Main code:
-device = torch.device("cpu") #("cuda")
-epochs  = 6000 
+device = torch.device("cuda") #("cuda") #("cuda")
+epochs  = 10000 
 
 Flag_batch = False #Use batch or not 
 Flag_Chebyshev = False #Use Chebyshev pts for more accurcy in BL region
